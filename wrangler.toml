@@ -1,0 +1,13 @@
+name = "overtime-tracker-otp"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+# Created by `wrangler kv namespace create OTP_KV` — replace "id" below with
+# the id it prints out. See README.md.
+kv_namespaces = [
+  { binding = "OTP_KV", id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID" }
+]
+
+# Secrets (set with `wrangler secret put <NAME>`, not stored in this file):
+#   BREVO_API_KEY  — your Brevo transactional API key
+#   SENDER_EMAIL   — the email address you verified as a sender in Brevo
