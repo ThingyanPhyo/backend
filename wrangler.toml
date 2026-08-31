@@ -10,6 +10,10 @@ id = "4cd0462d18d148a38eba3b1df83b6a5e"
 binding = "ADMIN_KV"
 id = "f1be83902f924e709ef1e2a007f9cfbd"
 
+[[kv_namespaces]]
+binding = "RECORDS_KV"
+id = "97fe1f86dfa64db5a9b70d9cff98e2d8"
+
 # Secrets are NOT stored here.
 # Set them with:
 # npx wrangler secret put BREVO_API_KEY
