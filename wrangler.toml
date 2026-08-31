@@ -6,6 +6,10 @@ compatibility_date = "2026-08-01"
 binding = "OTP_KV"
 id = "4cd0462d18d148a38eba3b1df83b6a5e"
 
+[[kv_namespaces]]
+binding = "ADMIN_KV"
+id = "f1be83902f924e709ef1e2a007f9cfbd"
+
 # Secrets are NOT stored here.
 # Set them with:
 # npx wrangler secret put BREVO_API_KEY
