@@ -2,19 +2,51 @@ name = "overtime-tracker-otp"
 main = "src/index.js"
 compatibility_date = "2026-08-01"
 
-[[kv_namespaces]]
-binding = "OTP_KV"
-id = "4cd0462d18d148a38eba3b1df83b6a5e"
+# Created by `wrangler kv namespace create OTP_KV` — replace "id" below with
+# the id it prints out. See README.md.
+#
+# RECORDS_KV is separate from OTP_KV on purpose: OTP entries are short-lived
+# (expirationTtl set on every write) while employee profiles/records must
+# persist indefinitely with no TTL — mixing the two in one namespace works
+# technically, but keeping them apart makes it obvious at a glance which
+# namespace is safe to bulk-expire/clear and which absolutely isn't.
+# Create it the same way: `wrangler kv namespace create RECORDS_KV`.
+#
+# ADMIN_KV holds only short-lived HR-review login sessions (12h TTL, see
+# ADMIN_TOKEN_TTL_MS in src/index.js) — same "short-lived, safe to bulk-clear"
+# category as OTP_KV, kept separate from it anyway so an admin session token
+# is never confused with (or accidentally cleared/queried alongside) an OTP
+# code. Create it the same way: `wrangler kv namespace create ADMIN_KV`.
+kv_namespaces = [
+  { binding = "OTP_KV", id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID" },
+  { binding = "RECORDS_KV", id = "REPLACE_WITH_YOUR_RECORDS_KV_NAMESPACE_ID" },
+  { binding = "ADMIN_KV", id = "REPLACE_WITH_YOUR_ADMIN_KV_NAMESPACE_ID" }
+]
 
-[[kv_namespaces]]
-binding = "ADMIN_KV"
-id = "f1be83902f924e709ef1e2a007f9cfbd"
-
-[[kv_namespaces]]
-binding = "RECORDS_KV"
-id = "97fe1f86dfa64db5a9b70d9cff98e2d8"
-
-# Secrets are NOT stored here.
-# Set them with:
-# npx wrangler secret put BREVO_API_KEY
-# npx wrangler secret put SENDER_EMAIL
+# Secrets (set with `wrangler secret put <NAME>`, not stored in this file):
+#   BREVO_API_KEY  — your Brevo transactional API key
+#   SENDER_EMAIL   — the email address you verified as a sender in Brevo
+#
+# HR Review accounts (email+password, then an OTP sent to that same email
+# as a second factor — see the ADMIN AUTH note in src/index.js) are
+# provisioned directly in ADMIN_KV, not via a secret — there's no
+# self-service signup. The key MUST be the account's email address
+# (lowercased), since that's also where the login OTP gets sent. Add one
+# with:
+#
+#   wrangler kv key put --binding=ADMIN_KV "account:jane@company.com" \
+#     '{"password":"choose-a-password","role":"hr","name":"Jane HR"}'
+#
+# A department-scoped manager (only sees/approves that one department) adds
+# "department" matching exactly what's stored in that department's employee
+# profiles (case-sensitive — whatever UserInfoSetupActivity's Department
+# field was filled in as):
+#
+#   wrangler kv key put --binding=ADMIN_KV "account:john@company.com" \
+#     '{"password":"choose-a-password","role":"manager","department":"Chamfering","name":"John Manager"}'
+#
+# Change a password or department later by just running the same command
+# again with a new value — existing adminTokens already issued stay valid
+# until their own 12h expiry regardless (sessions are independent of the
+# account once issued, so a password change doesn't retroactively log
+# anyone out).
