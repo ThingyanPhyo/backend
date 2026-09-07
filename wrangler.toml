@@ -19,7 +19,7 @@ compatibility_date = "2026-08-01"
 # code. Create it the same way: `wrangler kv namespace create ADMIN_KV`.
 kv_namespaces = [
   { binding = "OTP_KV", id = "4cd0462d18d148a38eba3b1df83b6a5e" },
-  { binding = "RECORDS_KV", id = "97ef1f86df64db5a9b70d9cff98e2d8" },
+  { binding = "RECORDS_KV", id = "97fe1f86dfa64db5a9b70d9cff98e2d8" },
   { binding = "ADMIN_KV", id = "f1be83902f924e709ef1e2a007f9cfbd" }
 ]
 
