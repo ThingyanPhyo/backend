@@ -1,4 +1,4 @@
-name = "overtime-tracker-otp"
+name = "backend"
 main = "src/index.js"
 compatibility_date = "2026-08-01"
 
@@ -18,9 +18,9 @@ compatibility_date = "2026-08-01"
 # is never confused with (or accidentally cleared/queried alongside) an OTP
 # code. Create it the same way: `wrangler kv namespace create ADMIN_KV`.
 kv_namespaces = [
-  { binding = "OTP_KV", id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID" },
-  { binding = "RECORDS_KV", id = "REPLACE_WITH_YOUR_RECORDS_KV_NAMESPACE_ID" },
-  { binding = "ADMIN_KV", id = "REPLACE_WITH_YOUR_ADMIN_KV_NAMESPACE_ID" }
+  { binding = "OTP_KV", id = "4cd0462d18d148a38eba3b1df83b6a5e" },
+  { binding = "RECORDS_KV", id = "97ef1f86df64db5a9b70d9cff98e2d8" },
+  { binding = "ADMIN_KV", id = "f1be83902f924e709ef1e2a007f9cfbd" }
 ]
 
 # Secrets (set with `wrangler secret put <NAME>`, not stored in this file):
