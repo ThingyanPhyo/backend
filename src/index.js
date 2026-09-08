@@ -11,10 +11,7 @@
 //   POST /otp/send            { "email": "..." }
 //     -> { "success": bool, "reason": "invalid_email"|"cooldown"|"email_send_failed"|null }
 //   POST /otp/verify          { "email": "...", "otp": "..." }
-//     -> { "success": bool, "proof": "..." } | { "success": false, "reason": "incorrect"|"expired"|"too_many_attempts"|"not_requested" }
-//        (proof is a one-time, 5-minute-lived token scoped to this email —
-//        every purpose gets one back, but only HR review's login flow
-//        currently uses it, to reach /admin/login/complete below)
+//     -> { "success": bool, "reason": "incorrect"|"expired"|"too_many_attempts"|"not_requested"|null }
 //   POST /records/check-owner { "employeeId": "...", "email": "..." }
 //     -> { "status": "new" | "restore" }
 //   POST /records/claim       { "employeeId": "...", "email": "...", "name": "...", "department": "..." }
@@ -24,59 +21,39 @@
 //     -> { "success": bool, "reason": "invalid_token"|null }
 //
 //   -- HR review (see ADMIN AUTH note below) --
-//   POST /admin/login/start        { "email": "...", "password": "..." }
-//     -> { "success": bool }
-//        (credentials only — issues nothing yet. On success the app sends
-//        this same email a normal /otp/send as the 2nd factor, then calls
-//        /admin/login/complete once /otp/verify hands back a proof for it.)
-//   POST /admin/login/complete     { "email": "...", "proof": "..." }
-//     -> { "success": bool, "adminToken": "...", "role": "hr"|"manager", "name": "..." } | { "success": false }
-//        (proof must be the exact value /otp/verify just returned for this
-//        email — see ADMIN AUTH note. This is the only call that actually
-//        issues a session.)
+//   POST /admin/login               { "password": "..." }
+//     -> { "success": bool, "adminToken": "..." } | { "success": false }
 //   POST /admin/employees           { "adminToken": "..." }
 //     -> { "success": bool, "employees": [{employeeId,name,department,email,recordCount,updatedAt}] }
-//        (a "manager" token only ever sees employees in their own department;
-//        "hr" sees every department — see ADMIN AUTH note)
 //   POST /admin/employee-records    { "adminToken": "...", "employeeId": "..." }
 //     -> { "success": bool, "name": "...", "department": "...", "records": [...] }
-//        (a "manager" token gets reason "unauthorized" for anyone outside
-//        their own department, even if they know the exact employeeId)
 //   POST /admin/approve             { "adminToken": "...", "employeeId": "...", "dateMillis": N, "approved": bool }
 //     -> { "success": bool, "reason": "not_found"|"unauthorized"|null }
 //
 // ---- ADMIN AUTH ----
-// Named accounts, not one shared password — each HR staffer/manager gets
-// their own email+password, provisioned by whoever administers this
-// backend directly in ADMIN_KV (no self-service signup — see wrangler.toml
-// for the command). Two roles:
-//   "hr"      — sees and can approve every employee, any department.
-//   "manager" — scoped to the single department on their account; every
-//               admin/* handler below re-checks that scope on every call
-//               (never just at login), so a manager can never see or
-//               approve another department's records even by guessing an
-//               employeeId directly.
+// One shared password (HR_REVIEW_PASSWORD, near handleAdminLogin below —
+// edit that line + `wrangler deploy` to change it, nothing else to touch),
+// not per-person named accounts — deliberately this simple. This app is
+// used offline by a small (~10 person) team, not distributed publicly, and
+// whoever holds this password already sees/approves every employee, every
+// department, no scoping — so there's nothing here that benefits from
+// per-account complexity the way a larger or public deployment might.
 //
-// Two-factor, two-step: /admin/login/start checks email+password only and
-// issues nothing; the app then sends this same email a normal /otp/send
-// (same OTP mechanism as everything else in this file) and only calls
-// /admin/login/complete once /otp/verify hands back a proof for it. That
-// proof — a one-time, 5-minute-lived token stored under otpProofKey(email)
-// — is what actually authorizes /admin/login/complete to issue a session;
-// knowing the password alone is never enough on its own, and neither is
-// the OTP code alone without also having already passed the password
-// check for that exact email.
-//
-// /admin/login/complete's adminToken (stored in ADMIN_KV with a 12-hour
-// TTL, alongside the role/department it was issued for) is what every
-// other /admin/* call requires from then on, never the password or OTP
-// again. Single-session: completing a new login immediately invalidates
-// whatever session that account already had, so at most one device/browser
-// can ever be using a given account at once — see the note in
-// handleAdminLoginComplete. This whole flow is intentionally NOT hidden
-// from employees: it's reachable from Settings in the app, same as any
-// other menu row — the login (and its single-session enforcement) is what
-// actually restricts it, not obscurity.
+// /admin/login exchanges that password for a random bearer adminToken
+// (stored in ADMIN_KV with a 12-hour TTL) — every other /admin/* call
+// requires that token, never the password itself again. Single-session:
+// logging in again immediately invalidates whatever session already
+// existed, so at most one device/browser can ever be using it at once —
+// see the note in handleAdminLogin. This is what actually matters here:
+// Settings → HR Review's own PIN gate only proves it's that phone's
+// owner — every employee already knows THEIR OWN PIN, so it can't be what
+// keeps them out of this menu on their own phone. This password is the
+// actual gate; the PIN before it is a different, unrelated one (this
+// app's normal lock, same as it guards Record Overtime). This login is
+// intentionally NOT hidden from employees: it's reachable from Settings
+// in the app, same as any other menu row — the password (and its
+// single-session enforcement) is what actually restricts it, not
+// obscurity.
 
 // ---- SECURITY DESIGN (records/*) — read this before changing anything ----
 // Employee ID is NOT a secret — company IDs are typically sequential
@@ -137,12 +114,8 @@ export default {
       return withCors(await handleSync(request, env));
     }
 
-    if (url.pathname === "/admin/login/start" && request.method === "POST") {
-      return withCors(await handleAdminLoginStart(request, env));
-    }
-
-    if (url.pathname === "/admin/login/complete" && request.method === "POST") {
-      return withCors(await handleAdminLoginComplete(request, env));
+    if (url.pathname === "/admin/login" && request.method === "POST") {
+      return withCors(await handleAdminLogin(request, env));
     }
 
     if (url.pathname === "/admin/employees" && request.method === "POST") {
@@ -228,14 +201,7 @@ async function handleVerify(request, env) {
   }
 
   await env.OTP_KV.delete(key);
-
-  // Every purpose gets a proof back — cheap, and harmless for the purposes
-  // that don't use it (change_email, pin_reset, account_setup just ignore
-  // the extra field). HR review's login is the one that does — see
-  // handleAdminLoginComplete.
-  const proof = generateToken();
-  await putJson(env.OTP_KV, otpProofKey(email), proof, OTP_PROOF_TTL_MS);
-  return json({ success: true, proof });
+  return json({ success: true });
 }
 
 // ---- Records sync/restore ------------------------------------------------
@@ -313,78 +279,38 @@ async function handleSync(request, env) {
 // ---- HR review / admin ----------------------------------------------------
 
 const ADMIN_TOKEN_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
-const OTP_PROOF_TTL_MS = 5 * 60 * 1000; // must match OtpVerifyActivity's OTP_TTL_MS
 
-async function handleAdminLoginStart(request, env) {
+// One shared password, not per-person accounts — see the ADMIN AUTH note
+// above for why this app deliberately keeps it this simple. To change it:
+// edit this line, then `wrangler deploy` (the same command already used
+// for every other backend change) — no separate provisioning command, no
+// KV, nothing else to touch.
+const HR_REVIEW_PASSWORD = "changeme";
+
+async function handleAdminLogin(request, env) {
   const body = await safeJson(request);
-  const email = normalizeEmail(body?.email);
   const password = (body?.password ?? "").toString();
-  if (!email || !password) {
+  if (!password || password !== HR_REVIEW_PASSWORD) {
     return json({ success: false });
   }
 
-  // Accounts are provisioned directly in ADMIN_KV, not through any
-  // endpoint — see wrangler.toml for the command. No account for this
-  // email, or a wrong password, both just look like "no". Deliberately
-  // issues nothing on success — this is only the first factor. See the
-  // ADMIN AUTH note above.
-  const account = await getJson(env.ADMIN_KV, accountKey(email));
-  if (!account || account.password !== password) {
-    return json({ success: false });
-  }
-
-  return json({ success: true });
-}
-
-async function handleAdminLoginComplete(request, env) {
-  const body = await safeJson(request);
-  const email = normalizeEmail(body?.email);
-  const proof = (body?.proof ?? "").toString().trim();
-  if (!email || !proof) {
-    return json({ success: false });
-  }
-
-  // The second factor: proof must be exactly what /otp/verify (handleVerify)
-  // just handed back for this email — one-time use, deleted immediately
-  // below regardless of outcome, and only ever valid for OTP_PROOF_TTL_MS.
-  // Without a real, matching proof here, a stolen/guessed password alone
-  // can never reach this endpoint successfully — see the ADMIN AUTH note.
-  const proofKeyName = otpProofKey(email);
-  const storedProof = await getJson(env.OTP_KV, proofKeyName);
-  await env.OTP_KV.delete(proofKeyName);
-  if (!storedProof || storedProof !== proof) {
-    return json({ success: false });
-  }
-
-  const account = await getJson(env.ADMIN_KV, accountKey(email));
-  if (!account) {
-    return json({ success: false });
-  }
-
-  // Single-session — the whole point of a named account here (see the
-  // ADMIN AUTH note above) is that only ONE person should ever be
-  // reviewing payroll data with it at a time, not "however many logins
-  // this password has quietly accumulated wherever it's been shared." A
-  // freshly completed login immediately kills whatever session this email
-  // already had, so the previous device's next request comes back
-  // unauthorized — there is never more than one valid adminToken per
-  // account.
-  const previousToken = await getJson(env.ADMIN_KV, activeTokenKey(email));
+  // Single-session — only ONE device should ever be reviewing payroll data
+  // at a time, not "however many logins this password has quietly
+  // accumulated wherever it's been shared." A fresh login immediately
+  // kills whatever session already existed, so the previous device's next
+  // request comes back unauthorized — there is never more than one valid
+  // adminToken at once, regardless of how many people actually know the
+  // password.
+  const previousToken = await getJson(env.ADMIN_KV, activeTokenKey());
   if (previousToken) {
     await env.ADMIN_KV.delete(adminTokenKey(previousToken));
   }
 
   const adminToken = generateToken();
-  const session = {
-    email,
-    role: account.role, // "hr" | "manager"
-    department: account.department ?? null, // only meaningful for "manager"
-    name: account.name ?? email,
-    createdAt: Date.now(),
-  };
+  const session = { createdAt: Date.now() };
   await putJson(env.ADMIN_KV, adminTokenKey(adminToken), session, ADMIN_TOKEN_TTL_MS);
-  await putJson(env.ADMIN_KV, activeTokenKey(email), adminToken, ADMIN_TOKEN_TTL_MS);
-  return json({ success: true, adminToken, role: session.role, name: session.name });
+  await putJson(env.ADMIN_KV, activeTokenKey(), adminToken, ADMIN_TOKEN_TTL_MS);
+  return json({ success: true, adminToken });
 }
 
 async function handleAdminEmployees(request, env) {
@@ -401,11 +327,6 @@ async function handleAdminEmployees(request, env) {
     for (const item of page.keys) {
       const profile = await getJson(env.RECORDS_KV, item.name);
       if (!profile) continue;
-      // A "manager" session only ever sees their own department — checked
-      // here, not just trusted from login, so this stays true even if a
-      // manager's department is edited after they already have a live
-      // token — see ADMIN AUTH note.
-      if (session.role === "manager" && profile.department !== session.department) continue;
       employees.push({
         employeeId: item.name.slice("emp:".length),
         name: profile.name ?? "",
@@ -418,7 +339,7 @@ async function handleAdminEmployees(request, env) {
     cursor = page.list_complete ? undefined : page.cursor;
   } while (cursor);
 
-  return json({ success: true, employees, role: session.role });
+  return json({ success: true, employees });
 }
 
 async function handleAdminEmployeeRecords(request, env) {
@@ -432,12 +353,6 @@ async function handleAdminEmployeeRecords(request, env) {
   const profile = employeeId ? await getJson(env.RECORDS_KV, employeeKey(employeeId)) : null;
   if (!profile) {
     return json({ success: false, reason: "not_found" });
-  }
-  // Same department scoping as the list above — a manager can't reach a
-  // record outside their department just by knowing/guessing the exact
-  // employeeId, since this is re-checked on every call.
-  if (session.role === "manager" && profile.department !== session.department) {
-    return json({ success: false, reason: "unauthorized" }, 401);
   }
 
   return json({
@@ -462,9 +377,6 @@ async function handleAdminApprove(request, env) {
   const profile = employeeId ? await getJson(env.RECORDS_KV, key) : null;
   if (!profile || !Array.isArray(profile.records)) {
     return json({ success: false, reason: "not_found" });
-  }
-  if (session.role === "manager" && profile.department !== session.department) {
-    return json({ success: false, reason: "unauthorized" }, 401);
   }
 
   const record = profile.records.find((r) => Number(r.dateMillis) === dateMillis);
@@ -522,12 +434,6 @@ function otpKey(email) {
   return `otp:${email}`;
 }
 
-// One-time, short-lived proof that /otp/verify just succeeded for this
-// email — see handleVerify / handleAdminLoginComplete.
-function otpProofKey(email) {
-  return `otpproof:${email}`;
-}
-
 function employeeKey(employeeId) {
   return `emp:${employeeId}`;
 }
@@ -536,15 +442,11 @@ function adminTokenKey(token) {
   return `admintoken:${token}`;
 }
 
-function accountKey(email) {
-  return `account:${email}`;
-}
-
-// Maps an HR-review account's email to whichever adminToken is currently
-// its one live session — see the single-session note in
-// handleAdminLoginComplete.
-function activeTokenKey(email) {
-  return `activetoken:${email}`;
+// Fixed key — one shared password means one possible live session, not one
+// per account (see the ADMIN AUTH note above) — the single-session check
+// in handleAdminLogin just needs to know whatever the CURRENT one is.
+function activeTokenKey() {
+  return `activetoken:hrreview`;
 }
 
 async function getJson(kv, key) {
